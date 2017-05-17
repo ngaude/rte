@@ -36,7 +36,9 @@ def grab_eco2mix_realtime(date,region_code=None,ddir='./'):
     # filtering malformed lines
     lines = [line for line in lines if len(line) > 0 and 'RTE ne pourra' not in line]
     c = '\n'.join(lines)
-    fname = fname.split('\\')[-1].split('.')[0] + '.csv'
+    # fname = fname.split('\\')[-1].split('.')[0] + '.csv'
+    # patching unproperly encoded filename ...
+    fname = 'eCO2mix_RTE_'+region_code+'_'+date+'.csv'
     with tempfile.NamedTemporaryFile() as tempf:
         tempf.write(c)
         tempf.flush()
