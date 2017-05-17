@@ -5,9 +5,21 @@ import argparse
 import urllib, StringIO, zipfile 
 import pandas as pd
 import numpy as np
+import tempfile
+import os.path
+from datetime import timedelta, date,datetime
+import time
+import sys
 
+def daterange(start_date, end_date):
+    for n in range(int ((end_date - start_date).days)+1):
+        yield start_date + timedelta(n)
 
-def grab_params(params):
+def grab_eco2mix_realtime(date,region_code=None,ddir='./'):
+    datefr = date[-2:] + '/' + date[5:7] + '/' + date[:4]
+    params = {'date':datefr}
+    if region_code is not None and region_code is not 'France':
+        params['region'] = region_code 
     urlparams = urllib.urlencode(params)
     url = 'https://eco2mix.rte-france.com/curves/eco2mixDl?' + urlparams
     u = urllib.urlopen(url)
@@ -15,66 +27,70 @@ def grab_params(params):
     z = zipfile.ZipFile(s)
     l = z.namelist()
     assert len(l) == 1
-    f = z.open(l[0])
+    fname = l[0]
+    f = z.open(fname)
+    c = f.read()
+    # patching the malformed \t before EOL
+    c = c.replace('\t\n','\n')
+    lines = c.split('\n')
+    # filtering malformed lines
+    lines = [line for line in lines if len(line) > 0 and 'RTE ne pourra' not in line]
+    c = '\n'.join(lines)
+    fname = fname.split('\\')[-1].split('.')[0] + '.csv'
+    with tempfile.NamedTemporaryFile() as tempf:
+        tempf.write(c)
+        tempf.flush()
+        df = pd.read_csv(tempf.name,sep='\t',encoding='cp1252')
+    # filter obvious NaN values...
+    df.replace(to_replace = '-', value = np.NaN, inplace=True)
+    df.replace(to_replace = 'ND', value = np.NaN, inplace=True)
+    if u'Périmètre' in df.columns:
+        df['region.code'] = [region2code[k] for k in df[u'Périmètre'].values]
+    df.to_csv(os.path.join(ddir, fname),index = False, encoding = 'UTF8')
 
-    if params['region'] is not 'France':
-        df = pd.read_csv(f,sep='\t',encoding='cp1252',skiprows=1,header=None)
 
-        # NOTE : patching the malformed NaN unnamed last column...
-        assert len(df[df.columns[-1]].dropna()) == 0
-        df = df[df.columns[:-1]]
-        df.columns =[u'Périmètre', u'Nature', u'Date', u'Heures', u'Consommation', u'Thermique', u'Nucléaire', u'Eolien', u'Solaire', u'Hydraulique', u'Pompage', u'Bioénergies', u'Ech. physiques']
-
-    else:
-        df = pd.read_csv(f,sep='\t',encoding='cp1252')
-
-    # NOTE : remove the disclaimer last line ...
-    df = df[:-1]
-    assert len(df) == 96
-    return df
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("date", help="date format YYYY-MM-DD", type=str)
-    parser.add_argument("--output", help="csv output filepath",type=str)
+    parser.add_argument("--startdate", help="start date YYYY-MM-DD, default is today", type=str,default='')
+    parser.add_argument("--dir", help="csv output directory",type=str,default='./')
     args = parser.parse_args()
 
-    region = {
-        'France':'France',
-        'ACA':'Grand-Est',
-        'ALP':'Nouvelle-Aquitaine',
-        'ARA':'Auvergne-Rhônes-Alpes',
-        'BFC':'Bourgogne-Franche-Comté',
-        'BRE':'Bretagne',
-        'CEN':'Centre-Val de Loire',
-        'IDF':'Ile-de-France',
-        'LRM':'Occitanie',
-        'NPP':'Hauts-de-France',
-        'NOR':'Normandie',
-        'PLO':'Pays-de-Loire',
-        'PAC':'PACA',
+    now = datetime.now()
+    end_date = date(now.year,now.month,now.day)
+
+    if len(args.startdate)==0:
+        start_date = end_date
+    else:
+        try:
+            ymd = args.startdate.split('-')
+            start_date = date(int(ymd[0]),int(ymd[1]),int(ymd[2]))
+        except:
+            parser.print_help()
+            sys.exit(1)
+
+    code2region = {
+        'ACA':u'Grand-Est',
+        'ALP':u'Nouvelle-Aquitaine',
+        'ARA':u'Auvergne-Rhône-Alpes',
+        'BFC':u'Bourgogne-Franche-Comté',
+        'BRE':u'Bretagne',
+        'CEN':u'Centre-Val de Loire',
+        'IDF':u'Ile-de-France',
+        'LRM':u'Occitanie',
+        'NPP':u'Hauts-de-France',
+        'NOR':u'Normandie',
+        'PLO':u'Pays-de-la-Loire',
+        'PAC':u'PACA',
+        'France':u'France',
     }
 
-    # french date format...
-    datefr = args.date[-2:] + '/' + args.date[5:7] + '/' + args.date[:4]
+    region2code = {v:k for k,v in code2region.iteritems()}
 
-    if args.output:
-        output = args.output
-    else:
-        output = 'eco2mix-' + args.date + '.csv'
+    for single_date in daterange(start_date, end_date):
+        date = single_date.strftime("%Y-%m-%d")
+        print 'grab eco2mix realtime csv at', date, 'to',args.dir
+        codes = sorted(code2region.keys())
+        for code in codes:
+            grab_eco2mix_realtime(date,region_code=code,ddir=args.dir)
 
-    # grab all regions...
-    df = [grab_params({'region':k,'date':datefr}) for k in region.keys()]
-    df = pd.concat(df)
-    assert len(df) == 96*len(region.keys())
-
-    # NOTE : patching malformed date...
-    df['Date'] = [i if '-' in i else i[-4:]+'-'+i[3:5]+'-'+i[:2] for i in df['Date']]
-
-    assert len(set(df.Date)) == 1
-
-    # NOTE : remove - empty values by NaN
-    df.replace(to_replace = '-', value = np.NaN, inplace=True)
-    df.replace(to_replace = 'ND', value = np.NaN, inplace=True)
-
-    df.to_csv(output,index = False, encoding = 'UTF8')
